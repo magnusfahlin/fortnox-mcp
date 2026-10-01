@@ -16,6 +16,7 @@ import { registerSupplierTools } from "../tools/suppliers.js";
 import { registerSupplierInvoiceTools } from "../tools/supplierInvoices.js";
 import { registerAccountTools } from "../tools/accounts.js";
 import { registerVoucherTools } from "../tools/vouchers.js";
+import { registerInboxTools } from "../tools/inbox.js";
 import { registerCompanyTools } from "../tools/company.js";
 import { registerAnalyticsTools } from "../tools/analytics.js";
 import { registerOrderTools } from "../tools/orders.js";
@@ -110,6 +111,7 @@ export function createRemoteServer(options: RemoteServerOptions): Express {
   registerSupplierInvoiceTools(mcpServer);
   registerAccountTools(mcpServer);
   registerVoucherTools(mcpServer);
+  registerInboxTools(mcpServer);
   registerCompanyTools(mcpServer);
   registerAnalyticsTools(mcpServer);
   registerOrderTools(mcpServer);

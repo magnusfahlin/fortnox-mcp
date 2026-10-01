@@ -42,6 +42,35 @@ async function waitForRateLimit(): Promise<void> {
 }
 
 /**
+ * Resolve a bearer access token for the current request, respecting the
+ * shared rate limit. In local mode userId is undefined and ignored; in
+ * remote mode it comes from the AsyncLocalStorage request context.
+ */
+async function getAuthorizedAccessToken(): Promise<string> {
+  await waitForRateLimit();
+  const tokenProvider = getTokenProvider();
+  const userId = getCurrentUserId();
+  return tokenProvider.getAccessToken(userId);
+}
+
+/**
+ * Strip undefined values out of a params object so axios doesn't serialize them
+ */
+function cleanQueryParams(
+  params?: Record<string, string | number | boolean | undefined>
+): Record<string, string | number | boolean> {
+  const cleanParams: Record<string, string | number | boolean> = {};
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) {
+        cleanParams[key] = value;
+      }
+    }
+  }
+  return cleanParams;
+}
+
+/**
  * Make an authenticated request to the Fortnox API
  * Automatically uses the current user context in remote mode
  */
@@ -51,24 +80,8 @@ export async function fortnoxRequest<T>(
   data?: unknown,
   params?: Record<string, string | number | boolean | undefined>
 ): Promise<T> {
-  await waitForRateLimit();
-
-  // Get access token using the token provider
-  // In local mode, userId is undefined and ignored
-  // In remote mode, userId comes from the request context
-  const tokenProvider = getTokenProvider();
-  const userId = getCurrentUserId();
-  const accessToken = await tokenProvider.getAccessToken(userId);
-
-  // Clean undefined params
-  const cleanParams: Record<string, string | number | boolean> = {};
-  if (params) {
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined) {
-        cleanParams[key] = value;
-      }
-    }
-  }
+  const accessToken = await getAuthorizedAccessToken();
+  const cleanParams = cleanQueryParams(params);
 
   const config: AxiosRequestConfig = {
     method,
@@ -85,6 +98,123 @@ export async function fortnoxRequest<T>(
 
   try {
     const response = await axios(config);
+    return response.data;
+  } catch (error) {
+    throw handleApiError(error, endpoint);
+  }
+}
+
+/**
+ * Result of a binary file download from Fortnox (e.g. an Inbox/Archive file)
+ */
+export interface FortnoxBinaryResponse {
+  data: Buffer;
+  contentType: string;
+  filename?: string;
+}
+
+/**
+ * Extract a filename from a Content-Disposition header, if present
+ */
+function parseFilenameFromContentDisposition(header: unknown): string | undefined {
+  if (typeof header !== "string") return undefined;
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // fall through to plain filename
+    }
+  }
+  const plainMatch = header.match(/filename="?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1] : undefined;
+}
+
+/**
+ * If an axios error response body was requested as binary (arraybuffer),
+ * Fortnox's JSON error payload arrives undecoded. Decode it so
+ * handleApiError can extract the Fortnox error message as usual.
+ */
+function decodeBinaryErrorBody(error: unknown): void {
+  if (!(error instanceof AxiosError)) return;
+  const data = error.response?.data;
+  if (!(data instanceof ArrayBuffer) && !Buffer.isBuffer(data)) return;
+  try {
+    const text = Buffer.from(data as ArrayBuffer).toString("utf-8");
+    error.response!.data = JSON.parse(text);
+  } catch {
+    // Not JSON (e.g. a genuine file was returned alongside an error status) - leave as-is
+  }
+}
+
+/**
+ * Download a binary file from the Fortnox API (e.g. an Inbox or Archive file).
+ * Fortnox returns these as raw bytes rather than JSON.
+ */
+export async function fortnoxRequestBinary(
+  endpoint: string,
+  params?: Record<string, string | number | boolean | undefined>
+): Promise<FortnoxBinaryResponse> {
+  const accessToken = await getAuthorizedAccessToken();
+  const cleanParams = cleanQueryParams(params);
+
+  try {
+    const response = await axios.get(`${FORTNOX_API_BASE_URL}${endpoint}`, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`
+      },
+      timeout: 30000,
+      params: Object.keys(cleanParams).length > 0 ? cleanParams : undefined,
+      responseType: "arraybuffer"
+    });
+
+    const contentType = (response.headers["content-type"] as string) || "application/octet-stream";
+    const filename = parseFilenameFromContentDisposition(response.headers["content-disposition"]);
+
+    return {
+      data: Buffer.from(response.data as ArrayBuffer),
+      contentType,
+      filename
+    };
+  } catch (error) {
+    decodeBinaryErrorBody(error);
+    throw handleApiError(error, endpoint);
+  }
+}
+
+/**
+ * A file to upload via multipart/form-data
+ */
+export interface FortnoxFileUpload {
+  buffer: Buffer;
+  filename: string;
+  contentType?: string;
+}
+
+/**
+ * Upload a file to the Fortnox API as multipart/form-data (e.g. to the Inbox).
+ */
+export async function fortnoxUploadFile<T>(
+  endpoint: string,
+  file: FortnoxFileUpload,
+  params?: Record<string, string | number | boolean | undefined>
+): Promise<T> {
+  const accessToken = await getAuthorizedAccessToken();
+  const cleanParams = cleanQueryParams(params);
+
+  const form = new FormData();
+  const blob = new Blob([file.buffer], { type: file.contentType || "application/octet-stream" });
+  form.append("file", blob, file.filename);
+
+  try {
+    const response = await axios.post(`${FORTNOX_API_BASE_URL}${endpoint}`, form, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json"
+      },
+      timeout: 30000,
+      params: Object.keys(cleanParams).length > 0 ? cleanParams : undefined
+    });
     return response.data;
   } catch (error) {
     throw handleApiError(error, endpoint);
