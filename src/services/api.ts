@@ -161,7 +161,14 @@ export async function fortnoxRequestBinary(
   try {
     const response = await axios.get(`${FORTNOX_API_BASE_URL}${endpoint}`, {
       headers: {
-        "Authorization": `Bearer ${accessToken}`
+        "Authorization": `Bearer ${accessToken}`,
+        // Without an explicit Accept header, axios defaults to
+        // "application/json, text/plain, */*", and Fortnox picks
+        // application/json from that list - which it can't produce for a
+        // binary file response, returning "Invalid response type". These
+        // endpoints are typed "*/*" in Fortnox's API (arbitrary file type),
+        // so ask for exactly that.
+        "Accept": "*/*"
       },
       timeout: 30000,
       params: Object.keys(cleanParams).length > 0 ? cleanParams : undefined,

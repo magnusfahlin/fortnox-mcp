@@ -32,13 +32,17 @@ const CLIENT_SECRET = requireEnv("FORTNOX_CLIENT_SECRET");
 const REDIRECT_PORT = 8888;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/callback`;
 
-const SCOPES = [
+// "inbox" is needed for the Inbox tools (list/get/upload); "connectfile" is
+// needed for fortnox_connect_file_to_voucher. "archive" is not requested
+// since nothing in this server calls /3/archive.
+const SCOPES = process.env.FORTNOX_SCOPES?.split(",") ?? [
   "customer",
   "invoice",
   "supplier",
   "bookkeeping",
   "companyinformation",
-  "archive"
+  "inbox",
+  "connectfile"
 ];
 
 async function getAuthorizationCode(): Promise<string> {

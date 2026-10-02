@@ -47,7 +47,14 @@ export function hasFortnoxCredentials(): boolean {
 }
 
 /**
- * Fortnox OAuth scopes required by this MCP server
+ * Fortnox OAuth scopes required by this MCP server.
+ *
+ * Note: "inbox" and "connectfile" are distinct from "archive" - the Inbox
+ * tools (fortnox_list_inbox_files, fortnox_get_inbox_file,
+ * fortnox_upload_inbox_file) only call /3/inbox, which requires "inbox";
+ * fortnox_connect_file_to_voucher calls /3/voucherfileconnections, which
+ * requires "connectfile". Neither calls /3/archive, so "archive" is not
+ * requested.
  */
 export const FORTNOX_SCOPES = [
   "companyinformation",
@@ -55,5 +62,6 @@ export const FORTNOX_SCOPES = [
   "invoice",
   "supplier",
   "bookkeeping",
-  "archive"
+  "inbox",
+  "connectfile"
 ];
