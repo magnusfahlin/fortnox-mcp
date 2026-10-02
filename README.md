@@ -196,8 +196,38 @@ npm run build
 | `FORTNOX_CLIENT_SECRET` | Yes | Your Fortnox app client secret |
 | `FORTNOX_REFRESH_TOKEN` | Yes | OAuth2 refresh token (only needed for initial setup; automatically persisted after first use) |
 | `FORTNOX_ACCESS_TOKEN` | No | Current access token (auto-refreshed) |
+| `FORTNOX_DOWNLOAD_DIR` | No | Directory where `fortnox_get_inbox_file` saves downloaded files (see below). `~` is expanded. Created if missing. |
 | `TRANSPORT` | No | `stdio` (default) or `http` |
 | `PORT` | No | HTTP port (default: 3000) |
+
+#### Saving Inbox downloads to disk (`FORTNOX_DOWNLOAD_DIR`)
+
+By default `fortnox_get_inbox_file` returns the whole file base64-encoded in the
+tool response. That is impractical for normal document analysis (it inflates the
+payload by ~33% and consumes context). Set `FORTNOX_DOWNLOAD_DIR` to a directory
+of your choice and the tool saves the file there instead:
+
+```json
+"env": {
+  "FORTNOX_DOWNLOAD_DIR": "~/fortnox-downloads"
+}
+```
+
+When it is set, the response contains the metadata (`local_path`, `filename`,
+`saved_filename`, `content_type`, `size_bytes`, `save_status`) but **not** the
+file content, so the file can be read by whatever tool has access to that directory.
+
+- The original filename is kept when safe. Directory parts, control characters and
+  reserved characters are removed, so a name like `../../x.pdf` can never write
+  outside the download directory.
+- Existing files are never overwritten. If a file with identical content already
+  exists it is reused (`save_status: "already_exists"`); if the content differs, a
+  numbered name such as `receipt (1).pdf` is used (`save_status: "saved_renamed"`).
+- The directory is created if missing; files are written readable by the current
+  user only (mode `0600`).
+- The file in Fortnox is never modified or deleted.
+- Ignored in `AUTH_MODE=remote`, where a shared server must not write to its own disk.
+- If the variable is not set, the previous base64 behaviour is unchanged.
 
 #### Remote Mode (AUTH_MODE=remote)
 

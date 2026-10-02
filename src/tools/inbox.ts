@@ -1,6 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fortnoxRequest, fortnoxRequestBinary, fortnoxUploadFile } from "../services/api.js";
+import {
+  fortnoxRequest,
+  fortnoxRequestBinary,
+  fortnoxUploadFile,
+  type FortnoxBinaryResponse
+} from "../services/api.js";
 import { ResponseFormat } from "../constants.js";
+import {
+  getDownloadDir,
+  sanitizeFilename,
+  saveDownloadedFile
+} from "../services/downloads.js";
 import {
   buildToolResponse,
   buildErrorResponse
@@ -69,6 +79,45 @@ function formatFileSize(bytes: number | undefined): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Save a downloaded Inbox file under the configured download directory and
+ * return metadata (including the local path) instead of the file content.
+ */
+async function saveInboxFileToDisk(
+  downloadDir: string,
+  fileId: string,
+  file: FortnoxBinaryResponse
+) {
+  const filename = sanitizeFilename(file.filename, `fortnox-inbox-${fileId}`);
+  const saved = await saveDownloadedFile(downloadDir, filename, file.data);
+
+  const output = {
+    file_id: fileId,
+    filename: file.filename || null,
+    saved_filename: saved.filename,
+    local_path: saved.path,
+    content_type: file.contentType,
+    size_bytes: file.data.length,
+    save_status: saved.status
+  };
+
+  const statusNote =
+    saved.status === "already_exists"
+      ? "An identical file already existed and was reused."
+      : saved.status === "saved_renamed"
+        ? "A different file with the same name already existed, so a numbered name was used."
+        : "Saved.";
+
+  const textContent =
+    `# Inbox File: ${file.filename || fileId}\n\n` +
+    `**Saved to**: ${saved.path}\n` +
+    `**Content-Type**: ${file.contentType}\n` +
+    `**Size**: ${formatFileSize(file.data.length)}\n\n` +
+    statusNote;
+
+  return buildToolResponse(textContent, output);
 }
 
 /**
@@ -175,17 +224,26 @@ Returns:
 
 Use fortnox_list_inbox_files first to find the file Id.
 
-IMPORTANT: File content is returned base64-encoded in the structured output
-(field "content_base64"). This is the only practical way to carry binary data
-through an MCP tool call, but it inflates the payload by ~33% and consumes
-context/token budget - avoid for very large files. Files larger than ${Math.round(MAX_INBOX_UPLOAD_BYTES / (1024 * 1024))}MB
-are rejected rather than embedded inline.
+Two modes, depending on server configuration:
+
+1. FORTNOX_DOWNLOAD_DIR is set: the file is saved into that directory and the
+   response contains the local file path (field "local_path"), the saved
+   filename, MIME type and size - not the file content. An existing different
+   file is never overwritten; a numbered name is used instead.
+
+2. FORTNOX_DOWNLOAD_DIR is not set: File content is returned base64-encoded in
+   the structured output (field "content_base64"). This inflates the payload by
+   ~33% and consumes context/token budget - avoid for very large files. Files
+   larger than ${Math.round(MAX_INBOX_UPLOAD_BYTES / (1024 * 1024))}MB are rejected rather than embedded inline.
+
+The file in Fortnox is never modified or deleted.
 
 Args:
   - file_id (string): Inbox file Id to download (required)
 
 Returns:
-  The file's name, MIME type, size, and base64-encoded content.`,
+  Mode 1: file Id, original and saved filename, local path, MIME type, size.
+  Mode 2: the file's name, MIME type, size, and base64-encoded content.`,
       inputSchema: GetInboxFileSchema,
       annotations: {
         readOnlyHint: true,
@@ -197,6 +255,11 @@ Returns:
     async (params: GetInboxFileInput) => {
       try {
         const file = await fortnoxRequestBinary(`/3/inbox/${encodeURIComponent(params.file_id)}`);
+
+        const downloadDir = getDownloadDir();
+        if (downloadDir) {
+          return await saveInboxFileToDisk(downloadDir, params.file_id, file);
+        }
 
         if (file.data.length > MAX_INBOX_UPLOAD_BYTES) {
           return buildErrorResponse(
