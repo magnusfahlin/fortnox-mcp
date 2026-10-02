@@ -47,10 +47,17 @@ export const UploadInboxFileSchema = z.object({
   filename: z.string()
     .min(1)
     .max(255)
-    .describe("Filename to store in Fortnox, including extension (e.g. 'receipt.pdf')"),
+    .optional()
+    .describe("Filename to store in Fortnox, including extension (e.g. 'receipt.pdf'). Required with content_base64; defaults to the file's basename with file_path."),
   content_base64: z.string()
     .min(1)
-    .describe("File content, base64-encoded"),
+    .optional()
+    .describe("File content, base64-encoded. Provide exactly one of content_base64 and file_path."),
+  file_path: z.string()
+    .min(1)
+    .max(4096)
+    .optional()
+    .describe("Path to a local file inside the server's FORTNOX_UPLOAD_ROOT directory (absolute, '~/...', or relative to the root). Provide exactly one of content_base64 and file_path."),
   content_type: z.string()
     .max(100)
     .optional()
@@ -82,10 +89,6 @@ export const ConnectFileToVoucherSchema = z.object({
     .int()
     .min(1)
     .describe("Voucher number within the series (required)"),
-  voucher_year: z.number()
-    .int()
-    .optional()
-    .describe("Fortnox financial year ID the voucher belongs to (1, 2, 3...). NOT calendar year. Optional, but disambiguates if voucher numbers repeat across years."),
   response_format: z.nativeEnum(ResponseFormat)
     .default(ResponseFormat.MARKDOWN)
     .describe("Output format: 'markdown' or 'json'")

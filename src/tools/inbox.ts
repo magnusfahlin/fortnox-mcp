@@ -7,6 +7,7 @@ import {
   type FortnoxBinaryResponse
 } from "../services/api.js";
 import { ResponseFormat } from "../constants.js";
+import { getUploadRoot, readUploadFile, sha256Hex } from "../services/uploads.js";
 import {
   getDownloadDir,
   sanitizeFilename,
@@ -355,21 +356,30 @@ Returns:
       title: "Upload File to Fortnox Inbox",
       description: `Upload a file to the Fortnox Inbox.
 
-IMPORTANT: Provide file content as a base64-encoded string. This is the
-practical way to pass binary data through an MCP tool call (no filesystem
-access to the server is assumed), but it inflates payload size by ~33%
-versus the raw bytes. Files whose decoded size exceeds ${Math.round(MAX_INBOX_UPLOAD_BYTES / (1024 * 1024))}MB are rejected.
+Provide the file in exactly one of two ways:
+
+1. file_path: a local file inside the directory configured as
+   FORTNOX_UPLOAD_ROOT on the server (absolute path, '~/...', or relative to
+   the root). Symlinks are resolved and anything outside the root is
+   rejected. Not available when FORTNOX_UPLOAD_ROOT is unset or in remote mode.
+
+2. content_base64: the file content as a base64-encoded string. This inflates
+   the payload by ~33% and consumes context - prefer file_path when available.
+
+Files larger than ${Math.round(MAX_INBOX_UPLOAD_BYTES / (1024 * 1024))}MB are rejected.
 
 Args:
-  - filename (string): Filename to store, including extension (required)
-  - content_base64 (string): File content, base64-encoded (required)
+  - file_path (string): Local file to upload (exactly one of file_path/content_base64)
+  - content_base64 (string): File content, base64-encoded (exactly one of file_path/content_base64)
+  - filename (string): Filename to store, including extension. Required with
+    content_base64; defaults to the file's basename with file_path.
   - content_type (string): MIME type (e.g. 'application/pdf'). Defaults to application/octet-stream.
   - folder_id (string): Inbox folder Id to upload into. Omit to upload to the Inbox root.
   - response_format ('markdown' | 'json'): Output format
 
 Returns:
-  The uploaded file's Id, name, and size. Use the Id with
-  fortnox_connect_file_to_voucher to attach it to a voucher.`,
+  The uploaded file's Id, name, size and SHA-256 of the uploaded bytes. Use
+  the Id with fortnox_connect_file_to_voucher to attach it to a voucher.`,
       inputSchema: UploadInboxFileSchema,
       annotations: {
         readOnlyHint: false,
@@ -380,30 +390,57 @@ Returns:
     },
     async (params: UploadInboxFileInput) => {
       try {
-        let buffer: Buffer;
-        try {
-          buffer = Buffer.from(params.content_base64, "base64");
-        } catch {
-          return buildErrorResponse(new Error("content_base64 is not valid base64 data."));
-        }
-
-        if (buffer.length === 0) {
-          return buildErrorResponse(new Error("Decoded file content is empty."));
-        }
-
-        if (buffer.length > MAX_INBOX_UPLOAD_BYTES) {
+        const hasContent = params.content_base64 !== undefined;
+        const hasPath = params.file_path !== undefined;
+        if (hasContent === hasPath) {
           return buildErrorResponse(
-            new Error(
-              `File is too large (${formatFileSize(buffer.length)}, limit ${formatFileSize(MAX_INBOX_UPLOAD_BYTES)}).`
-            )
+            new Error("Provide exactly one of content_base64 and file_path.")
           );
+        }
+
+        let buffer: Buffer;
+        let filename: string;
+        let sha256: string;
+        if (params.file_path !== undefined) {
+          const uploadRoot = getUploadRoot();
+          if (!uploadRoot) {
+            return buildErrorResponse(
+              new Error(
+                "file_path uploads are disabled: FORTNOX_UPLOAD_ROOT is not set on the server " +
+                "(or the server runs in remote mode). Use content_base64 instead."
+              )
+            );
+          }
+          const file = await readUploadFile(uploadRoot, params.file_path, MAX_INBOX_UPLOAD_BYTES);
+          buffer = file.data;
+          filename = params.filename ?? file.filename;
+          sha256 = file.sha256;
+        } else {
+          if (!params.filename) {
+            return buildErrorResponse(new Error("filename is required with content_base64."));
+          }
+          buffer = Buffer.from(params.content_base64!, "base64");
+
+          if (buffer.length === 0) {
+            return buildErrorResponse(new Error("Decoded file content is empty."));
+          }
+
+          if (buffer.length > MAX_INBOX_UPLOAD_BYTES) {
+            return buildErrorResponse(
+              new Error(
+                `File is too large (${formatFileSize(buffer.length)}, limit ${formatFileSize(MAX_INBOX_UPLOAD_BYTES)}).`
+              )
+            );
+          }
+          filename = params.filename;
+          sha256 = sha256Hex(buffer);
         }
 
         const response = await fortnoxUploadFile<FolderFileResponse>(
           "/3/inbox",
           {
             buffer,
-            filename: params.filename,
+            filename,
             contentType: params.content_type
           },
           params.folder_id ? { folderId: params.folder_id } : undefined
@@ -416,6 +453,7 @@ Returns:
           file_id: file.Id,
           filename: file.Name,
           size_bytes: file.Size ?? buffer.length,
+          sha256,
           path: file.Path || null
         };
 
@@ -426,7 +464,8 @@ Returns:
           textContent = `# File Uploaded\n\n` +
             `**Name**: ${file.Name}\n` +
             `**Id**: \`${file.Id}\`\n` +
-            `**Size**: ${formatFileSize(file.Size ?? buffer.length)}\n\n` +
+            `**Size**: ${formatFileSize(file.Size ?? buffer.length)}\n` +
+            `**SHA-256**: \`${sha256}\`\n\n` +
             `Use this file Id with fortnox_connect_file_to_voucher to attach it to a voucher.`;
         }
 
@@ -451,11 +490,12 @@ Args:
   - file_id (string): File Id to attach (required)
   - voucher_series (string): Voucher series (e.g. 'A') (required)
   - voucher_number (number): Voucher number within the series (required)
-  - voucher_year (number): Fortnox financial year ID (optional, disambiguates repeated voucher numbers across years)
   - response_format ('markdown' | 'json'): Output format
 
 Returns:
-  Confirmation of the file-voucher connection.`,
+  Confirmation of the file-voucher connection, including the voucher year
+  (financial year ID) Fortnox chose. The year cannot be specified: Fortnox
+  treats VoucherYear as read-only.`,
       inputSchema: ConnectFileToVoucherSchema,
       annotations: {
         readOnlyHint: false,
@@ -466,14 +506,12 @@ Returns:
     },
     async (params: ConnectFileToVoucherInput) => {
       try {
-        const connectionData: Record<string, unknown> = {
+        // VoucherYear is read-only in Fortnox and must not be sent
+        const connectionData = {
           FileId: params.file_id,
           VoucherSeries: params.voucher_series,
           VoucherNumber: String(params.voucher_number)
         };
-        if (params.voucher_year !== undefined) {
-          connectionData.VoucherYear = params.voucher_year;
-        }
 
         const response = await fortnoxRequest<VoucherFileConnectionResponse>(
           "/3/voucherfileconnections",

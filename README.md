@@ -138,8 +138,8 @@ That's it! You can now ask Claude to manage your Fortnox invoices, customers, an
 ### Inbox & File Attachments
 - `fortnox_list_inbox_files` - List files and folders in the Fortnox Inbox
 - `fortnox_get_inbox_file` - Download an Inbox file (base64-encoded content)
-- `fortnox_upload_inbox_file` - Upload a file (e.g. a receipt) to the Inbox (base64-encoded content)
-- `fortnox_connect_file_to_voucher` - Attach an uploaded file to a voucher as supporting documentation
+- `fortnox_upload_inbox_file` - Upload a file (e.g. a receipt) to the Inbox, from a local path under `FORTNOX_UPLOAD_ROOT` or as base64-encoded content
+- `fortnox_connect_file_to_voucher` - Attach an uploaded file to a voucher as supporting documentation (Fortnox chooses the voucher year; it cannot be specified)
 - `fortnox_list_voucher_file_connections` - Check whether a file (e.g. an Inbox file Id) is attached to a voucher, or list all file-voucher connections
 
 ### Company Information
@@ -198,6 +198,7 @@ npm run build
 | `FORTNOX_REFRESH_TOKEN` | Yes | OAuth2 refresh token (only needed for initial setup; automatically persisted after first use) |
 | `FORTNOX_ACCESS_TOKEN` | No | Current access token (auto-refreshed) |
 | `FORTNOX_DOWNLOAD_DIR` | No | Directory where `fortnox_get_inbox_file` saves downloaded files (see below). `~` is expanded. Created if missing. |
+| `FORTNOX_UPLOAD_ROOT` | No | Directory tree `fortnox_upload_inbox_file` may read local files from via `file_path` (see below). `~` is expanded. |
 | `TRANSPORT` | No | `stdio` (default) or `http` |
 | `PORT` | No | HTTP port (default: 3000) |
 
@@ -229,6 +230,26 @@ file content, so the file can be read by whatever tool has access to that direct
 - The file in Fortnox is never modified or deleted.
 - Ignored in `AUTH_MODE=remote`, where a shared server must not write to its own disk.
 - If the variable is not set, the previous base64 behaviour is unchanged.
+
+#### Uploading local files by path (`FORTNOX_UPLOAD_ROOT`)
+
+`fortnox_upload_inbox_file` accepts either `content_base64` or `file_path` (exactly
+one). Passing a path avoids pushing the whole file through the model context as
+base64. Set `FORTNOX_UPLOAD_ROOT` to the directory files may be uploaded from:
+
+```json
+"env": {
+  "FORTNOX_UPLOAD_ROOT": "~/Desktop/receipts"
+}
+```
+
+- `file_path` may be absolute, start with `~`, or be relative to the root.
+- Symlinks are resolved, and any path (or symlink target) outside the root is rejected.
+- The filename in Fortnox defaults to the file's basename; pass `filename` to override it.
+- The 15MB limit applies as for base64 uploads.
+- The response includes the uploaded file's Id, name, size and SHA-256.
+- Ignored in `AUTH_MODE=remote`, where a shared server must not read from its own disk.
+- If the variable is not set, `file_path` is rejected and only `content_base64` works.
 
 #### Remote Mode (AUTH_MODE=remote)
 
