@@ -229,6 +229,22 @@ export async function fortnoxUploadFile<T>(
 }
 
 /**
+ * Error for a failed Fortnox API call. Carries the HTTP status and Fortnox
+ * error code (when Fortnox responded) so callers can distinguish e.g.
+ * "not found" from other failures.
+ */
+export class FortnoxApiError extends Error {
+  constructor(
+    public readonly status: number | undefined,
+    message: string,
+    public readonly code?: number
+  ) {
+    super(message);
+    this.name = "FortnoxApiError";
+  }
+}
+
+/**
  * Handle API errors with descriptive messages
  */
 export function handleApiError(error: unknown, context?: string): Error {
@@ -243,42 +259,50 @@ export function handleApiError(error: unknown, context?: string): Error {
       data?.ErrorInformation?.Message ||
       data?.message ||
       data?.error;
+    const fortnoxCode = data?.ErrorInformation?.code ?? data?.ErrorInformation?.Code;
 
     switch (status) {
       case 400:
-        return new Error(
+        return new FortnoxApiError(status,
           `${prefix}Bad request: ${fortnoxError || "Invalid parameters"}. ` +
-          `Check that all required fields are provided and values are valid.`
+          `Check that all required fields are provided and values are valid.`,
+          fortnoxCode
         );
       case 401:
-        return new Error(
+        return new FortnoxApiError(status,
           `${prefix}Authentication failed. The access token may be expired or invalid. ` +
-          `Try refreshing authentication.`
+          `Try refreshing authentication.`,
+          fortnoxCode
         );
       case 403:
-        return new Error(
+        return new FortnoxApiError(status,
           `${prefix}Permission denied. Your API credentials don't have access to this resource. ` +
-          `Check your Fortnox app scopes.`
+          `Check your Fortnox app scopes.`,
+          fortnoxCode
         );
       case 404:
-        return new Error(
-          `${prefix}Resource not found. The requested item does not exist or has been deleted.`
+        return new FortnoxApiError(status,
+          `${prefix}Resource not found. The requested item does not exist or has been deleted.`,
+          fortnoxCode
         );
       case 429:
-        return new Error(
+        return new FortnoxApiError(status,
           `${prefix}Rate limit exceeded. Fortnox allows 25 requests per 5 seconds. ` +
-          `Please wait before retrying.`
+          `Please wait before retrying.`,
+          fortnoxCode
         );
       case 500:
       case 502:
       case 503:
-        return new Error(
+        return new FortnoxApiError(status,
           `${prefix}Fortnox server error (${status}). The service may be temporarily unavailable. ` +
-          `Please try again later.`
+          `Please try again later.`,
+          fortnoxCode
         );
       default:
-        return new Error(
-          `${prefix}API error ${status}: ${fortnoxError || JSON.stringify(data)}`
+        return new FortnoxApiError(status,
+          `${prefix}API error ${status}: ${fortnoxError || JSON.stringify(data)}`,
+          fortnoxCode
         );
     }
   }

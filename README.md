@@ -140,6 +140,7 @@ That's it! You can now ask Claude to manage your Fortnox invoices, customers, an
 - `fortnox_get_inbox_file` - Download an Inbox file (base64-encoded content)
 - `fortnox_upload_inbox_file` - Upload a file (e.g. a receipt) to the Inbox (base64-encoded content)
 - `fortnox_connect_file_to_voucher` - Attach an uploaded file to a voucher as supporting documentation
+- `fortnox_list_voucher_file_connections` - Check whether a file (e.g. an Inbox file Id) is attached to a voucher, or list all file-voucher connections
 
 ### Company Information
 - `fortnox_get_company_info` - Get company details

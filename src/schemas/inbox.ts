@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ResponseFormat } from "../constants.js";
+import { PaginationSchema } from "./common.js";
 
 /**
  * Maximum decoded file size accepted for Inbox uploads.
@@ -91,3 +92,16 @@ export const ConnectFileToVoucherSchema = z.object({
 }).strict();
 
 export type ConnectFileToVoucherInput = z.infer<typeof ConnectFileToVoucherSchema>;
+
+/**
+ * Schema for listing voucher file connections / looking up one file's connection
+ */
+export const ListVoucherFileConnectionsSchema = PaginationSchema.extend({
+  file_id: z.string()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("File Id to look up (e.g. an Inbox file Id from fortnox_list_inbox_files). Omit to list all voucher file connections (paginated with limit/page).")
+}).strict();
+
+export type ListVoucherFileConnectionsInput = z.infer<typeof ListVoucherFileConnectionsSchema>;

@@ -3,6 +3,7 @@ import {
   fortnoxRequest,
   fortnoxRequestBinary,
   fortnoxUploadFile,
+  FortnoxApiError,
   type FortnoxBinaryResponse
 } from "../services/api.js";
 import { ResponseFormat } from "../constants.js";
@@ -13,18 +14,22 @@ import {
 } from "../services/downloads.js";
 import {
   buildToolResponse,
-  buildErrorResponse
+  buildErrorResponse,
+  buildPaginationMeta,
+  formatPaginationInfo
 } from "../services/formatters.js";
 import {
   ListInboxFilesSchema,
   GetInboxFileSchema,
   UploadInboxFileSchema,
   ConnectFileToVoucherSchema,
+  ListVoucherFileConnectionsSchema,
   MAX_INBOX_UPLOAD_BYTES,
   type ListInboxFilesInput,
   type GetInboxFileInput,
   type UploadInboxFileInput,
-  type ConnectFileToVoucherInput
+  type ConnectFileToVoucherInput,
+  type ListVoucherFileConnectionsInput
 } from "../schemas/inbox.js";
 
 // API response types
@@ -63,6 +68,7 @@ interface FolderFileResponse {
 
 interface FortnoxVoucherFileConnection {
   FileId: string;
+  Name?: string;
   VoucherNumber: string;
   VoucherSeries: string;
   VoucherYear?: number;
@@ -72,6 +78,57 @@ interface FortnoxVoucherFileConnection {
 
 interface VoucherFileConnectionResponse {
   VoucherFileConnection: FortnoxVoucherFileConnection;
+}
+
+interface VoucherFileConnectionListResponse {
+  VoucherFileConnections?: FortnoxVoucherFileConnection[];
+  MetaInformation?: {
+    "@TotalResources": number;
+    "@TotalPages": number;
+    "@CurrentPage": number;
+  };
+}
+
+/**
+ * Fortnox error code ("Filen kunde inte hittas.") returned with HTTP 400 by
+ * GET /3/voucherfileconnections/{FileId} when no connection exists for the
+ * file. Fortnox returns the same code for an Id that matches no file at all.
+ */
+const FILE_NOT_FOUND_ERROR_CODE = 2000704;
+
+function formatConnection(c: FortnoxVoucherFileConnection) {
+  return {
+    file_id: c.FileId,
+    filename: c.Name || null,
+    voucher_series: c.VoucherSeries,
+    voucher_number: c.VoucherNumber,
+    voucher_year: c.VoucherYear ?? null,
+    voucher_description: c.VoucherDescription || null
+  };
+}
+
+function buildFileConnectionResponse(
+  fileId: string,
+  rows: ReturnType<typeof formatConnection>[],
+  responseFormat: ResponseFormat
+) {
+  const output = { file_id: fileId, connected: rows.length > 0, connections: rows };
+
+  let textContent: string;
+  if (responseFormat === ResponseFormat.JSON) {
+    textContent = JSON.stringify(output, null, 2);
+  } else if (rows.length === 0) {
+    textContent = `# Voucher File Connection\n\n` +
+      `File \`${fileId}\` is **not connected** to any voucher.`;
+  } else {
+    const c = rows[0];
+    textContent = `# Voucher File Connection\n\n` +
+      `File ${c.filename ? `**${c.filename}** ` : ""}(\`${c.file_id}\`) is **connected** to voucher ${c.voucher_series}${c.voucher_number}` +
+      `${c.voucher_year !== null ? ` (financial year ID ${c.voucher_year})` : ""}.` +
+      `${c.voucher_description ? `\n\n**Voucher description**: ${c.voucher_description}` : ""}`;
+  }
+
+  return buildToolResponse(textContent, output);
 }
 
 function formatFileSize(bytes: number | undefined): string {
@@ -442,6 +499,111 @@ Returns:
             `**File Id**: \`${connection.FileId}\`\n` +
             `**Voucher**: ${connection.VoucherSeries}${connection.VoucherNumber}\n\n` +
             `The file is now attached as supporting documentation for this voucher.`;
+        }
+
+        return buildToolResponse(textContent, output);
+      } catch (error) {
+        return buildErrorResponse(error);
+      }
+    }
+  );
+
+  // List voucher file connections, or check whether one file is connected
+  server.registerTool(
+    "fortnox_list_voucher_file_connections",
+    {
+      title: "List Voucher File Connections",
+      description: `Check which voucher (if any) a file is attached to, or list all file-voucher connections.
+
+Use this before treating an Inbox file as unbooked: pass the Inbox file Id as
+file_id. If the file is connected to a voucher, the voucher series and number
+are returned.
+
+Args:
+  - file_id (string): File Id to look up (e.g. from fortnox_list_inbox_files).
+    Omit to list all voucher file connections.
+  - limit (number): Max results per page when listing (1-100, default 20)
+  - page (number): Page number when listing (default 1)
+  - response_format ('markdown' | 'json'): Output format
+
+Returns:
+  With file_id: "connected" (true/false) and, when connected, the connection's
+  file Id, filename, voucher series, voucher number, voucher year (financial
+  year ID) and voucher description. "connected" is false only when Fortnox
+  reports that no connection exists for the file Id (it does not check that
+  the Id refers to an existing file); any other failure is returned as an
+  error, never as "not connected".
+  Without file_id: one page of connections with the same fields, plus
+  pagination info. To check a specific file, pass file_id rather than
+  scanning the list.`,
+      inputSchema: ListVoucherFileConnectionsSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true
+      }
+    },
+    async (params: ListVoucherFileConnectionsInput) => {
+      try {
+        if (params.file_id) {
+          let connections: FortnoxVoucherFileConnection[];
+          try {
+            const response = await fortnoxRequest<VoucherFileConnectionResponse>(
+              `/3/voucherfileconnections/${encodeURIComponent(params.file_id)}`
+            );
+            connections = [response.VoucherFileConnection];
+          } catch (error) {
+            if (
+              error instanceof FortnoxApiError &&
+              error.status === 400 &&
+              error.code === FILE_NOT_FOUND_ERROR_CODE
+            ) {
+              connections = [];
+            } else {
+              throw error;
+            }
+          }
+          return buildFileConnectionResponse(
+            params.file_id,
+            connections.map(formatConnection),
+            params.response_format
+          );
+        }
+
+        const response = await fortnoxRequest<VoucherFileConnectionListResponse>(
+          "/3/voucherfileconnections",
+          "GET",
+          undefined,
+          { limit: params.limit, page: params.page }
+        );
+        const rows = (response.VoucherFileConnections || []).map(formatConnection);
+        const total = response.MetaInformation?.["@TotalResources"] ?? rows.length;
+        const output = {
+          ...buildPaginationMeta(total, params.page, params.limit, rows.length),
+          connections: rows
+        };
+
+        let textContent: string;
+        if (params.response_format === ResponseFormat.JSON) {
+          textContent = JSON.stringify(output, null, 2);
+        } else if (rows.length === 0) {
+          textContent = `# Voucher File Connections\n\n*No voucher file connections found.*`;
+        } else {
+          const lines = [
+            "# Voucher File Connections",
+            "",
+            formatPaginationInfo(total, params.page, params.limit, rows.length),
+            "",
+            "| File | File Id | Voucher | Year ID | Description |",
+            "|------|---------|---------|---------|-------------|"
+          ];
+          for (const c of rows) {
+            lines.push(
+              `| ${c.filename ?? ""} | \`${c.file_id}\` | ${c.voucher_series}${c.voucher_number} | ${c.voucher_year ?? "-"} | ${c.voucher_description ?? ""} |`
+            );
+          }
+          textContent = lines.join("\n");
         }
 
         return buildToolResponse(textContent, output);
